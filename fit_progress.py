@@ -1,13 +1,13 @@
 #!/usr/bin/env python
-"""Summarize the sampling progress in an EXOZIPPy log written by plain `exozippy`.
+"""Summarize the sampling progress in the log of a running EXOZIPPy fit.
 
     python fit_progress.py FITLOG_18604236.out [more logs ...]
 
-numpyro writes one terminal progress bar per chain, so the log is a pile of
-carriage returns and cursor-movement codes.  This pulls out each chain's
-latest bar and prints a table plus an estimate of when the slowest chain
-will finish.  (Fits started with run_exozippy.py print readable progress
-themselves.)
+numpyro writes one terminal progress bar per chain, so a log file (e.g. a
+SLURM job's output) is a pile of carriage returns and cursor-movement codes.
+This pulls out each chain's latest bar and prints a table plus an estimate
+of when the slowest chain will finish.  It only reads the log; if a numpyro
+or EXOZIPPy update changes the bars, it finds nothing rather than failing.
 
 The warmup length is taken from the fit's yaml in the same directory when
 one matches the iteration count; pass --tune to give it explicitly.

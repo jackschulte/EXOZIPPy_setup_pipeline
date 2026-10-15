@@ -1,38 +1,79 @@
-# exozippy_pipeline
+# EXOZIPPy_setup_pipeline
 
-Scripts that set up an EXOZIPPy global fit for a TOI from scratch: download and
-clean the TESS light curves, fetch TRES RVs, build the SED and stellar priors,
-and write the EXOZIPPy config, params file and SLURM script. It is the EXOZIPPy
-counterpart of `../exofast_tools/scripts/setup_fit.ipynb`, and the output
-follows the layout of `Global_Fits/meep4/toi7475_exozippy`.
+Scripts that set up an [EXOZIPPy](https://github.com/jdeast/EXOZIPPy) global
+fit of a TESS planet candidate from scratch. They:
+- download and clean the TESS light curves;
+- fetch TRES (or CHIRON) RVs;
+- build the SED and the stellar priors;
+- write the EXOZIPPy config and parameter files, ready to run.
 
-Run everything in the `exozippy` conda environment:
+They run anywhere EXOZIPPy runs, on a laptop or on a SLURM cluster.
 
-```bash
-module load Miniforge3/25.11.0-1
-conda activate exozippy
-cd /mnt/research/Exoplanet_Lab/jack/pipelines/exozippy_pipeline
-```
+## Installation
+
+1. **Install EXOZIPPy** by following [its README](https://github.com/jdeast/EXOZIPPy).
+   It brings numpy, pandas, astropy, lightkurve, astroquery, matplotlib and
+   PyYAML.
+2. **Install the extra packages**, in the same Python environment:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. **Get `keplersplinev2.py`** from
+   [avanderburg/keplersplinev2](https://github.com/avanderburg/keplersplinev2).
+   The light curves are flattened with it, and it is not on PyPI. Put the file
+   in this folder. If it lives somewhere else, give its directory with
+   `--keplerspline-path`, `$KEPLERSPLINE_PATH`, or the
+   [defaults file](#personal-defaults).
+4. **Store your tess.exoplanets.dk password** if you want TRES RVs: one line
+   in a file only you can read.
+   ```bash
+   echo 'MY_PASSWORD' > ~/.tres_password && chmod 600 ~/.tres_password
+   ```
 
 ## Quick start
 
 ```bash
-# one-time: store the tess.exoplanets.dk password (only the password, one line)
-echo 'MY_PASSWORD' > ~/.tres_password && chmod 600 ~/.tres_password
-
-python setup_exozippy_fit.py TOI-7475 --outdir /mnt/research/Exoplanet_Lab/jack/Global_Fits/meep4/toi7475_exozippy \
-       --username schulte --check
+python setup_exozippy_fit.py TOI-7475 --username myname --check
+cd toi7475_exozippy && exozippy toi7475.yaml
 ```
 
-Then look at `lc_diagnostics/*.png` and the generated files, and submit:
-
-```bash
-cd <outdir> && sbatch SLURM_TOI7475.sb
-```
+This writes the fit into `./toi7475_exozippy` (choose another place with
+`--outdir`). Look at `lc_diagnostics/*.png` and the generated files before you
+start the fit.
 
 `--check` builds the EXOZIPPy model, without sampling, and prints the starting
-log-probability. It catches config mistakes in a minute or two instead of in
-the SLURM queue.
+log-probability. That catches config mistakes in a minute or two instead of
+after the fit has started.
+
+**On a SLURM cluster**, add `--slurm` to also write `SLURM_TOI7475.sb`, then
+submit it with `sbatch`. The cluster-specific parts (account, partition,
+module and environment lines, email) are options. They are most convenient
+in your defaults file.
+
+## Personal defaults
+
+Any option of any script can be given a new default in
+`~/.exozippy_pipeline.yaml`, or in the file named by
+`$EXOZIPPY_PIPELINE_CONFIG`. This keeps the settings that belong to you or to
+your machine off the command line. Keys are option names without their
+leading dashes, and an option typed on the command line still wins. For
+example, on a cluster:
+
+```yaml
+username: myname
+keplerspline-path: ~/code/keplersplinev2
+slurm: true
+chains: 20
+slurm-account: my_group
+email: me@example.edu
+slurm-setup:
+  - module load Miniforge3
+  - conda activate exozippy
+```
+
+[`exozippy_pipeline.example.yaml`](exozippy_pipeline.example.yaml) lists every
+useful key. A key that no script knows (usually a typo) is reported as a
+warning.
 
 ## What gets made
 
@@ -42,58 +83,61 @@ the SLURM queue.
 | `lc_diagnostics/*.png` | raw + spline, flattened + clipped, phase-folded, per sector |
 | `<TIC>.TRES.rv` (+ `<TIC>.TRES.raw.txt`) | `get_tres_rvs.py` |
 | `toi<N>.sed.yaml`, `toi<N>.mkticsed.params.yaml` | `exozippy-mkticsed` (TICv8.2, Gaia DR3, 2MASS, WISE, Schlegel Av) |
-| `toi<N>.params.yaml` | stellar priors from mkticsed, a spectroscopic [Fe/H] prior from ExoFOP, and each planet's period, Tc, Rp/R* starting values |
-| `toi<N>.yaml` | the EXOZIPPy config: star + MIST, SED, planets/orbits, every `n2*.dat` and `*.rv` in the directory, sampler |
-| `SLURM_TOI<N>.sb` | the SLURM script (20 cores, 6.5 days by default). It runs the fit through `run_exozippy.py`, for readable progress in the log |
+| `toi<N>.params.yaml` | stellar priors from mkticsed, a spectroscopic [Fe/H] prior from ExoFOP, and each planet's period, Tc and Rp/R* starting values |
+| `toi<N>.yaml` | the EXOZIPPy config: star + MIST, SED, planets and orbits, every `n2*.dat` and `*.rv` in the directory, and the sampler |
+| `SLURM_TOI<N>.sb` | only with `--slurm`: a batch script that runs the fit |
 
 ## The scripts
 
 ### `setup_exozippy_fit.py`: the whole thing
 
 ```
-python setup_exozippy_fit.py TOI-<N> [--outdir DIR] [--username USER] [--check]
+python setup_exozippy_fit.py TOI-<N> [--outdir DIR] [--username USER] [--check] [--slurm]
 ```
 
 Steps, each of which can be skipped to reuse what is already in the directory:
 
 1. **ExoFOP**: the TIC ID, and period, Tc, T14 and depth for every TOI on the
-   star. TOIs dispositioned FP/FA are left out; pick TOIs with
+   star. TOIs dispositioned FP/FA are left out. Pick TOIs with
    `--planets 7475.01 7475.02`, or give ephemerides by hand with
    `--ephem P,TC,T14_HOURS,DEPTH_PPM` (repeat per planet). Planets are lettered
    b, c, ... in TOI order.
 2. **RVs** (`--skip-rvs`): see `get_tres_rvs.py`. This runs before the slow
    TESS step, so problems show up early. If the download fails (missing
-   credentials, a failed login, or site changes), the setup stops. Re-run with
-   `--skip-rvs` to set up without RVs, or with `--raw-file` to use a table you
-   saved. A target that is not on the TRES site, or has no RVs there yet, is
-   set up without RVs. The setup also warns if fewer RVs came back than ExoFOP
-   lists TRES spectra.
+   credentials, a failed login, or a change to the site), the setup stops.
+   Re-run with `--skip-rvs` to set up without RVs, or with `--raw-file` to use
+   a table you saved. A target that is not on the TRES site, or has no RVs
+   there yet, is set up without RVs. The setup also warns if fewer RVs came
+   back than the number of TRES spectra ExoFOP lists.
 3. **TESS** (`--skip-tess`): see `get_tess_data.py`.
-4. **SED** (`--skip-sed`): `exozippy-mkticsed` with star name `A`.
+4. **SED** (`--skip-sed`): `exozippy-mkticsed`, with star name `A`.
 5. **[Fe/H]**: the SNR-weighted mean of the spectroscopic (SPC) metallicities
    on ExoFOP. The width is the larger of the scatter between spectra and the
    median quoted error. Without spectra, mkticsed's TIC value is kept.
    Override it with `--feh MU SIGMA`.
-6. Writes `toi<N>.yaml`, `toi<N>.params.yaml` and `SLURM_TOI<N>.sb`. It will
-   not overwrite them without `--overwrite`.
+6. **Write** `toi<N>.yaml` and `toi<N>.params.yaml`, and with `--slurm` also
+   `SLURM_TOI<N>.sb`. Existing files are not replaced without `--overwrite`.
 
 Model choices:
-- Orbits are eccentric when there are RVs and circular when there are none.
-  Override with `--circular` or `--eccentric`. Add `--rv-trend` for a linear
-  RV slope.
-- Tc is moved to the epoch nearest the middle of the data.
-- TRES/CHIRON times are BJD_UTC, so their `rvinstrument` entries get
+- **Orbits** are eccentric when there are RVs and circular when there are
+  none. Override with `--circular` or `--eccentric`. Add `--rv-trend` for a
+  linear RV slope.
+- **Tc** is moved to the epoch nearest the middle of the data.
+- **TRES/CHIRON times** are BJD_UTC, so their `rvinstrument` entries get
   `time_scale: "utc"` and EXOZIPPy converts them to BJD_TDB. The time scale
   is read from each `.rv` file's header line, so a file headed `#BJD_TDB` is
   left alone.
-- There is no dilution term. EXOZIPPy has no explicit dilution parameter, and
-  SPOC/QLP fluxes are already deblended. Use `--undeblend` and a multi-star
-  model if you need it.
-- Limb darkening is fit per band, with no Claret prior. EXOZIPPy does not have
-  that prior yet.
-- Sampler: numpyro with 20 chains, tune 2000, draws 4000 and target_accept
-  0.95, the same as the toi7475 fit. Change these with `--chains`, `--tune`,
-  `--draws` and `--method-sampler`.
+- **No dilution term.** EXOZIPPy has no explicit dilution parameter, and the
+  SPOC and QLP fluxes are already deblended. Use `--undeblend` and a
+  multi-star model if you need one.
+- **Limb darkening** is fit per band, with no Claret prior; EXOZIPPy does not
+  have that prior yet.
+- **Sampler**: numpyro with tune 2000, draws 4000 and target_accept 0.95.
+  numpyro runs the chains in parallel, one per core, so set `--chains` to the
+  number of cores the fit will have. The default is EXOZIPPy's 4; 20 suits a
+  20-core cluster job. `cores:` is left for EXOZIPPy to choose, except with
+  `--cpus` or `--slurm`. With `--slurm` it is the job's CPU count, because
+  EXOZIPPy's own choice would count the whole node.
 
 **Adding ground-based light curves.** Every `n2*.dat` file in the fit
 directory goes into the config. Drop in files named in the EXOFASTv2
@@ -101,30 +145,28 @@ convention, `nYYYYMMDD.<band>.<telescope>.<anything>.dat` (for example
 `n20260310.Sloani.MuSCAT2.TOI7475detrend.dat`), and regenerate:
 
 ```bash
-python setup_exozippy_fit.py TOI-7475 --outdir <outdir> --skip-tess --skip-rvs --skip-sed --overwrite --check
+python setup_exozippy_fit.py TOI-7475 --skip-tess --skip-rvs --skip-sed --overwrite --check
 ```
 
 Ground-based exposure times are estimated from the median cadence, and
-`ninterp` is set by Jason's rule (30 min -> 10, 10 min -> 4, shorter -> 1).
-Check both in the config. The band name in the filename is also used as the
-filter name, so it must be a name EXOZIPPy knows: `Sloang/r/i/z`, `TESS`,
-`V`, `R`, `I` (`R`/`I` mean Cousins), `B`, `J`, `H`, `K`, ...
+`ninterp` follows the usual EXOFASTv2 rule: 30 min -> 10, 10 min -> 4,
+shorter -> 1. Check both in the config. The band name in the file name is
+also used as the filter name, so it must be one EXOZIPPy knows: `Sloang/r/i/z`,
+`TESS`, `V`, `R`, `I` (`R`/`I` mean Cousins), `B`, `J`, `H`, `K`, ...
 
 ### `get_tess_data.py`: TESS light curves
 
 ```
 python get_tess_data.py TOI-<N> --list           # what is available, and what would be chosen
-python get_tess_data.py TOI-<N> --outdir DIR     # download + process every sector
+python get_tess_data.py TOI-<N> --outdir DIR     # download and process every sector
 ```
 
 For each sector, it picks one product: the first cadence in `--cadences`
-(default `20,120,200,600,1800`, the highest cadence first, as in
-`setup_fit.ipynb`), then the first pipeline in `--authors` (default
-`SPOC,TESS-SPOC,QLP`). Then, as in `lightcurve_pipeline.create_light_curve`,
-it:
+(default `20,120,200,600,1800`, highest cadence first), then the first
+pipeline in `--authors` (default `SPOC,TESS-SPOC,QLP`). Then it:
 
-- keeps only cadences with quality == 0 (`--keep-flagged` to turn this off)
-  and normalizes the flux;
+- keeps only cadences with quality == 0 (`--keep-flagged` turns this off) and
+  normalizes the flux;
 - flattens it with `keplersplinev2`, masking a `--window` x T14 window (default
   3) around every transit of every TOI on the star;
 - clips outliers at `--nsigma` (default 5): both sides out of transit, but only
@@ -137,28 +179,25 @@ it:
 - keeps only the transit windows and writes them in the EXOFASTv2/EXOZIPPy
   format.
 
-It also checks every transit and prints a `CHECK` line, and marks the transit
+It also checks every transit. It prints a `CHECK` line, and marks the transit
 in red in the PNG, if the transit is less than half covered, has no
 pre-ingress or post-egress baseline, or has a baseline offset of more than 5
 sigma and 10% of the depth. Look at those transits; to drop one, re-run with
 `--omit-tc <BJD> [<BJD> ...] --overwrite`.
-
-For every option, see the [option reference](#option-reference) at the end.
-setup_exozippy_fit.py accepts all of the light-curve options too.
 
 MAST sometimes stalls without answering, and astroquery has no socket timeout
 for that case. Each MAST search is therefore abandoned after 2 minutes, and
 each download after 10 minutes, then retried up to 3 times. If MAST is down,
 the script stops with a `TimeoutError` instead of hanging.
 
-`keplersplinev2` is imported from
-`../exofast_tools/scripts/lightcurve_pipeline`; set `KEPLERSPLINE_PATH` if it
-moves. It needs `pydl`, which has been installed in the `exozippy` env.
+The flattening and chopping follow the EXOFASTv2 light-curve pipeline by
+E. Thygesen and J. Ranshaw in
+[exofast_tools](https://github.com/jackschulte/exofast_tools).
 
 ### `get_tres_rvs.py`: TRES/CHIRON RVs
 
 ```
-python get_tres_rvs.py <TIC or TOI> --username schulte --outdir DIR [--instrument chiron]
+python get_tres_rvs.py <TIC or TOI> --username USER --outdir DIR [--instrument chiron]
 python get_tres_rvs.py <TIC> --raw-file table.txt --outdir DIR   # only reformat a table you saved
 ```
 
@@ -167,68 +206,49 @@ multi-order ("high precision") RV button, and writes `<TIC>.TRES.rv` with the
 columns BJD_UTC, RV and error, in m/s. CHIRON's km/s are converted to m/s, and
 rows from other spectrographs are dropped.
 
-- Credentials: `--username` or `$TRES_USERNAME`; the password in
-  `~/.tres_password`, a file given with `--password-file`, or `$TRES_PASSWORD`.
-  Never put the password on the command line.
-- `--method requests` (default) posts the site's ASP.NET forms directly, so it
-  needs no browser and runs on the HPCC. It runs the search through the
-  Search link-button's postback (`__EVENTTARGET`), opens the candidate page
-  whose results row matches `T0<TIC>`, and follows the export's
-  `window.open(...)` to the `T0<TIC>.RV.txt` file. `--method selenium` uses
-  the old RV_mini_pipeline browser flow, which needs `pip install selenium`,
-  plus Firefox (on the HPCC) or Chrome. Try it if the site's pages change and
-  the requests method stops working.
-- Both methods refuse to download unless the candidate page's title and the
-  export file are for the requested `T0<TIC>`, so another star's RVs cannot
-  end up in a fit. Only the export buttons are pressed; the candidate page's
-  "Update" and "Recalc" buttons are never touched.
-- If the downloaded page cannot be parsed, it is saved as
+- **Credentials:** the username comes from `--username`, `$TRES_USERNAME`, or
+  `username:` in the defaults file. The password comes from `--password-file`,
+  `$TRES_PASSWORD`, or `~/.tres_password`. Never put the password on the
+  command line.
+- **`--method requests`** (the default) posts the site's ASP.NET forms
+  directly, so it needs no browser and also works on a cluster node. It runs
+  the search through the Search link-button's postback (`__EVENTTARGET`),
+  opens the candidate page whose results row matches `T0<TIC>`, and follows
+  the export's `window.open(...)` to the `T0<TIC>.RV.txt` file.
+- **`--method selenium`** drives a headless Firefox or Chrome instead
+  (`pip install selenium`). Try it if the site's pages change and the requests
+  method stops working.
+- **Target check:** both methods refuse to download unless the candidate
+  page's title and the export file are for the requested `T0<TIC>`, so another
+  star's RVs cannot end up in a fit. Only the export buttons are pressed; the
+  candidate page's "Update" and "Recalc" buttons are never touched.
+- **Debugging:** if the downloaded page cannot be parsed, it is saved as
   `<TIC>.TRES.raw.txt.unparsed` for inspection.
 
-### `run_exozippy.py`: readable progress in the SLURM log
+### `fit_progress.py`: progress of a running fit
 
 ```
-python run_exozippy.py toi7792.yaml [--report-minutes 30] [--steps 200]
+python fit_progress.py FITLOG_12345678.out [more logs ...]
 ```
 
-This runs the fit exactly as `exozippy toi7792.yaml` does; the generated SLURM
-scripts use it. The only difference is the sampling progress. numpyro draws
-one terminal progress bar per chain. In a log file those become carriage
-returns and cursor-movement codes, bars past about the 20th become
-`... (more hidden) ...`, and each chain reports only every 5% of its
-iterations. The wrapper writes plain lines instead:
+numpyro draws one terminal progress bar per chain. In a log file, such as a
+SLURM job's output, these become carriage returns and cursor-movement codes.
+This script reads such a log and prints, for each chain, the latest iteration,
+the phase (warmup or draws, read from the fit's yaml), the elapsed time, the
+s/it and the time left. It also names the chains whose bars tqdm hid, and
+estimates when the slowest chain will finish. It only reads the log, so
+nothing breaks if EXOZIPPy or numpyro change their output; it then just finds
+nothing.
 
-```
-[2026-10-09 03:12] sampling 2h41m | warmup: 12 chains, draws: 8 chains, done: 0/20
-    progress: min 38% (chain 4), median 55%, max 72% (chain 14)
-    slowest: chain 4 at 55.7 s/it, ~1d22h left -> about 2026-10-11 01:36
-    % by chain: 0:41 1:55 2:38 ...
-```
+### `exofop_utils.py`, `user_defaults.py`
 
-It writes one report every `--report-minutes` (default 30), a line as each
-chain finishes, and a per-chain table of warmup and draw times at the end.
-Progress is updated every 1/`--steps` of each chain (default 200 steps,
-against numpyro's 20), which costs nothing noticeable. Only numpyro's
-multi-chain progress is changed; the rest of EXOZIPPy's output is untouched.
-
-### `fit_progress.py`: progress of a fit started with plain `exozippy`
-
-```
-python fit_progress.py FITLOG_18604236.out [more logs ...]
-```
-
-Reads a log full of tqdm bars and prints each chain's latest iteration,
-phase (warmup or draws, read from the fit's yaml), elapsed time, s/it and time
-left. It also says which chains tqdm hid from the log, and when the slowest
-chain should finish.
-
-### `exofop_utils.py`
-
-Shared ExoFOP lookups (TOI table, target JSON) used by the other scripts.
+Shared helpers: ExoFOP lookups (the TOI table and the target JSON), and the
+defaults file.
 
 ## Option reference
 
-Every script also prints its options with `--help`.
+Every script also prints its options with `--help`. That output shows the
+defaults in effect, including any from your defaults file.
 
 ### Target and output
 
@@ -250,7 +270,7 @@ Every script also prints its options with `--help`.
 | `--skip-tess` | off | Don't download TESS data; use the `n2*.dat` files already in the directory. |
 | `--skip-rvs` | off | Don't download RVs; use the `*.rv` files already in the directory, if any. |
 | `--skip-sed` | off | Don't run mkticsed; reuse `<name>.sed.yaml` and `<name>.mkticsed.params.yaml`. |
-| `--check` | off | At the end, build the EXOZIPPy model (no sampling) and print the starting log-probability. |
+| `--check` / `--no-check` | off | At the end, build the EXOZIPPy model (no sampling) and print the starting log-probability. |
 
 ### TESS light curves (setup_exozippy_fit.py, get_tess_data.py)
 
@@ -266,6 +286,7 @@ Every script also prints its options with `--help`.
 | `--undeblend` | off | Put back the contaminating flux SPOC removed, which dilutes the transits again. |
 | `--omit-tc BJD [BJD ...]` | none | Leave out the transits at these mid-transit times. The `CHECK` lines print the value to use. |
 | `--no-plots` | off | Skip the diagnostic PNGs in `lc_diagnostics/`. |
+| `--keplerspline-path DIR` | `$KEPLERSPLINE_PATH`, the Python path, or this folder | Directory holding `keplersplinev2.py`. |
 
 ### TRES/CHIRON RVs (setup_exozippy_fit.py, get_tres_rvs.py)
 
@@ -287,15 +308,26 @@ Every script also prints its options with `--help`.
 | `--eccentric` | when there are RVs | Fit the eccentricity even without RVs. |
 | `--rv-trend` | off | Add a linear RV trend (`orbit.trend.gammadot`). |
 
-### Sampler and SLURM (setup_exozippy_fit.py)
+### Sampler (setup_exozippy_fit.py)
 
 | Option | Default | What it does |
 |---|---|---|
 | `--method-sampler M` | `numpyro` | EXOZIPPy sampler: `numpyro`, `nuts`, `blackjax`, `nutpie`, `ptde`, `ptde_async`, `demc`, `demcz` or `nested`. Only `ptde`/`ptde_async` stop on convergence; `nuts`, `demcz` and the PTDEs honor a `maxtime:` added to the config. |
-| `--chains N` | `20` | Number of chains. For numpyro, keep this equal to `--cpus`: each chain runs on its own CPU. |
-| `--tune N` | `2000` | Tuning (warm-up) iterations per chain. |
-| `--draws N` | `4000` | Kept iterations per chain. With 20 chains, 1000 is usually enough and finishes much sooner. |
-| `--cpus N` | equal to `--chains` | Sets both `cores:` in the config and `--cpus-per-task` in the SLURM script. |
-| `--days D` | `6.5` | SLURM time limit, in days. numpyro cannot stop itself early, so the run has to finish inside this. |
-| `--mem-per-cpu MEM` | `1G` | SLURM memory per CPU. |
-| `--email ADDR` | `jschulte@msu.edu` | SLURM notification address; `''` for none. |
+| `--chains N` | `4` | Number of chains. numpyro runs one per core, so match the cores the fit will have. |
+| `--tune N` | `2000` | Tuning (warmup) iterations per chain. |
+| `--draws N` | `4000` | Kept iterations per chain. With many chains, fewer draws each is usually enough and finishes sooner. |
+| `--cpus N` | left to EXOZIPPy; equal to `--chains` with `--slurm` | `cores:` in the config, and `--cpus-per-task` in the SLURM script. |
+| `--exozippy-cmd CMD` | `exozippy` | The command that runs EXOZIPPy, e.g. `poetry run exozippy`. Used in the SLURM script and the printed run command. |
+
+### SLURM (setup_exozippy_fit.py, only with `--slurm`)
+
+| Option | Default | What it does |
+|---|---|---|
+| `--slurm` / `--no-slurm` | off | Also write the batch script `SLURM_TOI<N>.sb`. |
+| `--slurm-days D` | `6.5` | Time limit, in days. numpyro cannot stop itself early, so the fit has to finish inside this. |
+| `--slurm-mem-per-cpu MEM` | `1G` | Memory per CPU. |
+| `--slurm-account NAME` | none | Account to charge. |
+| `--slurm-partition NAME` | none | Partition to run in. |
+| `--email ADDR` | none | Address for SLURM job notifications. |
+| `--slurm-setup LINE` | none | A shell line run before the fit, e.g. `'module load Miniforge3'` or `'conda activate exozippy'`. Repeat for several. |
+| `--slurm-directive OPTION` | none | An extra `#SBATCH` option without its dashes, e.g. `qos=normal`. Repeat for several. |

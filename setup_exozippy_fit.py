@@ -10,8 +10,8 @@ Steps (each can be skipped to reuse what is already in the fit directory):
   4. SED:    exozippy-mkticsed -> <name>.sed.yaml and the stellar priors
              (Gaia DR3 parallax, Schlegel Av upper limit, TIC starting values)
   5. [Fe/H]: spectroscopic prior from ExoFOP (SNR-weighted SPC values)
-  6. Writes  <name>.yaml (the EXOZIPPy config), <name>.params.yaml and
-             SLURM_TOI<N>.sb
+  6. Writes  <name>.yaml (the EXOZIPPy config) and <name>.params.yaml, and
+             with --slurm a SLURM script, SLURM_TOI<N>.sb
 
 Every n2*.dat light curve and *.rv file in the fit directory goes into the
 config, so ground-based light curves named in the EXOFASTv2 convention
@@ -19,12 +19,12 @@ config, so ground-based light curves named in the EXOFASTv2 convention
 n20260310.Sloani.MuSCAT2.TOI7475detrend.dat) can be dropped in and picked up
 by re-running with --skip-tess --skip-rvs --skip-sed --overwrite.
 
-Run it in the exozippy conda environment:
-    conda activate exozippy
-    python setup_exozippy_fit.py TOI-7475 --outdir ~/fits/toi7475_exozippy --username schulte --check
+Run it in the Python environment where EXOZIPPy is installed:
+    python setup_exozippy_fit.py TOI-7475 --username myname --check
+    cd toi7475_exozippy && exozippy toi7475.yaml
 
-Then submit:
-    cd ~/fits/toi7475_exozippy && sbatch SLURM_TOI7475.sb
+On a SLURM cluster, add --slurm (and the cluster's account, modules etc.,
+best kept in ~/.exozippy_pipeline.yaml), then `sbatch SLURM_TOI7475.sb`.
 """
 
 import argparse
@@ -41,41 +41,56 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import exofop_utils  # noqa: E402
 import get_tess_data  # noqa: E402
 import get_tres_rvs  # noqa: E402
+import user_defaults  # noqa: E402
 
 STAR = "A"
 
-SLURM_TEMPLATE = """\
-#!/bin/bash --login
+def job_cores(args):
+    """Cores to write into the config: given with --cpus, or the SLURM job's
+    allocation (EXOZIPPy's own automatic choice counts the whole node, not
+    the CPUs SLURM granted).  None for a local run: EXOZIPPy then picks."""
+    if args.cpus:
+        return args.cpus
+    return args.chains if args.slurm else None
 
-#SBATCH --account=exoplanet_lab # Set this to charge cpu-hours to buy-in account
-##SBATCH --nodelist="acm-007"    # Set this job to run on the buy-in node
-#SBATCH --time={minutes}              # Set the runtime limit for this (minutes)
-#SBATCH --nodes=1               # Set to one node
-#SBATCH --ntasks=1             # Number of tasks this job will run
-#SBATCH --cpus-per-task={cpus}       # Number of cores needed for each task
-#SBATCH --mem-per-cpu={mem}        # Memory required for each core
-{mail}#SBATCH --job-name=TOI-{toi}     # Set a job name to easily track status
-#SBATCH --open-mode=append      # Set the output file to append mode
-#SBATCH --output=FITLOG_%j.out # Standard output goes to this file
 
-module purge
-module load Miniforge3/25.11.0-1
-
-# Setup the EXOFASTv2 environment
-source /mnt/research/Exoplanet_Lab/source.sh
-
-export TQDM_MININTERVAL=1800   # each chain's bar redraws at most every 30 min
-
-# run the fit: run_exozippy.py is `exozippy {config}` with readable progress
-# lines in this log (a report every --report-minutes) instead of tqdm bars
-
-conda activate exozippy
-python {wrapper} {config} --report-minutes 30
-
-# {days:g} days for SLURM
-
-wait
-"""
+def slurm_script(args, toi, config):
+    """A SLURM batch script for the fit.  Everything specific to a cluster or
+    a person (account, partition, modules, environment, email) comes from the
+    options, or from ~/.exozippy_pipeline.yaml."""
+    days = args.slurm_days
+    L = [
+        "#!/bin/bash --login",
+        "",
+        f"#SBATCH --job-name=TOI-{toi}",
+        f"#SBATCH --time={int(round(days * 1440))}   # minutes ({days:g} days)",
+        "#SBATCH --nodes=1",
+        "#SBATCH --ntasks=1",
+        f"#SBATCH --cpus-per-task={job_cores(args)}   # numpyro runs one chain per core",
+        f"#SBATCH --mem-per-cpu={args.slurm_mem_per_cpu}",
+        "#SBATCH --output=FITLOG_%j.out",
+        "#SBATCH --open-mode=append",
+    ]
+    if args.slurm_account:
+        L.append(f"#SBATCH --account={args.slurm_account}")
+    if args.slurm_partition:
+        L.append(f"#SBATCH --partition={args.slurm_partition}")
+    if args.email:
+        L += ["#SBATCH --mail-type=ALL", f"#SBATCH --mail-user={args.email}"]
+    for d in args.slurm_directive or []:
+        L.append(f"#SBATCH --{str(d).lstrip('-')}")
+    L.append("")
+    if args.slurm_setup:
+        L.append("# environment")
+        L += [str(line) for line in args.slurm_setup]
+        L.append("")
+    L += [
+        "export TQDM_MININTERVAL=1800   # progress bars redraw at most every 30 min in the log",
+        "",
+        f"{args.exozippy_cmd} {config}",
+        "",
+    ]
+    return "\n".join(L)
 
 
 # ---------------------------------------------------------------------------
@@ -86,8 +101,8 @@ _TESS_NAME = re.compile(r"\.S(\d+)\.(\d+)s(unbinned|binned-([\d.]+)min)\.dat$")
 
 
 def ninterp_for(exptime_min):
-    """Jason's recommendation (generate_supporting_files.generate_pro_file):
-    30 min -> 10, 10 min -> 4, shorter -> 1."""
+    """The usual EXOFASTv2 choice (J. Eastman; generate_supporting_files.py in
+    exofast_tools): 30 min -> 10, 10 min -> 4, shorter -> 1."""
     if exptime_min >= 25:
         return 10
     if exptime_min >= 8:
@@ -367,6 +382,7 @@ def build_config(info, name, planets, transits, rvs, args, notes):
                 L.append(f'    time_scale: "{r["time_scale"]}"   # file times are BJD_UTC; '
                          f'EXOZIPPy converts to BJD_TDB')
 
+    cores = job_cores(args)
     L += [
         "",
         f'parameter_file: "{name}.params.yaml"',
@@ -376,7 +392,8 @@ def build_config(info, name, planets, transits, rvs, args, notes):
         f"  tune: {args.tune}",
         f"  draws: {args.draws}",
         f"  chains: {args.chains}",
-        f"  cores: {args.cpus or args.chains}",
+        f"  cores: {cores}" if cores else
+        "  # cores: unset, so EXOZIPPy picks a number for the machine it runs on",
         "  target_accept: 0.95",
         "  recompute_trace: True   # if False and a prefix.nc file exists, load it instead of re-sampling",
         "",
@@ -416,7 +433,7 @@ def check_fit(outdir, config_name):
 # ---------------------------------------------------------------------------
 
 
-def main(argv=None):
+def build_parser(apply_defaults=True):
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -437,7 +454,7 @@ def main(argv=None):
     s.add_argument("--skip-rvs", action="store_true", help="use the *.rv files already there")
     s.add_argument("--skip-sed", action="store_true",
                    help="reuse <name>.sed.yaml and <name>.mkticsed.params.yaml")
-    s.add_argument("--check", action="store_true",
+    s.add_argument("--check", action=argparse.BooleanOptionalAction, default=False,
                    help="build the EXOZIPPy model and evaluate the start logp at the end")
 
     get_tess_data.add_tess_arguments(p)
@@ -453,16 +470,43 @@ def main(argv=None):
                      help="fit e even without RVs (default when there are RVs)")
     m.add_argument("--rv-trend", action="store_true", help="fit a linear RV trend")
 
-    sm = p.add_argument_group("sampler / SLURM")
-    sm.add_argument("--method-sampler", default="numpyro", help="EXOZIPPy sampler (default: numpyro)")
-    sm.add_argument("--chains", type=int, default=20, help="(default: 20)")
-    sm.add_argument("--tune", type=int, default=2000, help="(default: 2000)")
-    sm.add_argument("--draws", type=int, default=4000, help="(default: 4000)")
-    sm.add_argument("--cpus", type=int, default=None, help="cores (default: = chains)")
-    sm.add_argument("--days", type=float, default=6.5, help="SLURM time limit in days (default: 6.5)")
-    sm.add_argument("--mem-per-cpu", default="1G", help="(default: 1G)")
-    sm.add_argument("--email", default="jschulte@msu.edu",
-                    help="SLURM notification address; '' for none (default: %(default)s)")
+    sm = p.add_argument_group("sampler")
+    sm.add_argument("--method-sampler", default="numpyro",
+                    help="EXOZIPPy sampler (default: %(default)s)")
+    sm.add_argument("--chains", type=int, default=4,
+                    help="chains; numpyro runs one per core, so match the cores you have "
+                         "(default: %(default)s)")
+    sm.add_argument("--tune", type=int, default=2000, help="warmup iterations (default: %(default)s)")
+    sm.add_argument("--draws", type=int, default=4000, help="kept iterations (default: %(default)s)")
+    sm.add_argument("--cpus", type=int, default=None,
+                    help="cores for EXOZIPPy and the SLURM job (default: = chains with --slurm; "
+                         "otherwise left to EXOZIPPy)")
+    sm.add_argument("--exozippy-cmd", default="exozippy",
+                    help="command that runs EXOZIPPy, e.g. 'poetry run exozippy' "
+                         "(default: %(default)s)")
+
+    sl = p.add_argument_group("SLURM (only with --slurm)")
+    sl.add_argument("--slurm", action=argparse.BooleanOptionalAction, default=False,
+                    help="also write a SLURM batch script, SLURM_TOI<N>.sb")
+    sl.add_argument("--slurm-days", type=float, default=6.5,
+                    help="time limit in days (default: %(default)s)")
+    sl.add_argument("--slurm-mem-per-cpu", default="1G", help="(default: %(default)s)")
+    sl.add_argument("--slurm-account", default=None, help="account to charge")
+    sl.add_argument("--slurm-partition", default=None, help="partition to run in")
+    sl.add_argument("--email", default=None, help="address for SLURM job notifications")
+    sl.add_argument("--slurm-setup", action="append", metavar="LINE",
+                    help="a shell line run before the fit, e.g. 'module load Miniforge3' or "
+                         "'conda activate exozippy' (repeat for several)")
+    sl.add_argument("--slurm-directive", action="append", metavar="OPTION",
+                    help="an extra #SBATCH option without its dashes, e.g. 'qos=normal' "
+                         "(repeat for several)")
+    if apply_defaults:
+        user_defaults.apply(p)
+    return p
+
+
+def main(argv=None):
+    p = build_parser()
     args = p.parse_args(argv)
 
     # ---- 1. ExoFOP ------------------------------------------------------------
@@ -481,7 +525,7 @@ def main(argv=None):
     config_path = os.path.join(outdir, f"{name}.yaml")
     params_path = os.path.join(outdir, f"{name}.params.yaml")
     slurm_path = os.path.join(outdir, f"SLURM_TOI{toi}.sb")
-    for path in (config_path, params_path, slurm_path):
+    for path in (config_path, params_path) + ((slurm_path,) if args.slurm else ()):
         if os.path.exists(path) and not args.overwrite:
             p.error(f"{path} exists; use --overwrite to replace it")
     os.makedirs(os.path.join(outdir, "fitresults"), exist_ok=True)
@@ -587,25 +631,22 @@ def main(argv=None):
     with open(config_path, "w") as f:
         f.write(build_config(info, name, planets, transits, rvs, args, notes))
 
-    mail = ""
-    if args.email:
-        mail = (f"#SBATCH --mail-type=ALL         # SLURM automated messages to email\n"
-                f"#SBATCH --mail-user={args.email}\n")
-    with open(slurm_path, "w") as f:
-        f.write(SLURM_TEMPLATE.format(
-            minutes=int(round(args.days * 1440)), cpus=args.cpus or args.chains,
-            mem=args.mem_per_cpu, mail=mail, toi=toi, config=f"{name}.yaml", days=args.days,
-            wrapper=os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_exozippy.py"),
-        ))
+    written = [config_path, params_path]
+    if args.slurm:
+        with open(slurm_path, "w") as f:
+            f.write(slurm_script(args, toi, f"{name}.yaml"))
+        written.append(slurm_path)
 
-    print(f"\nWrote {config_path}\n      {params_path}\n      {slurm_path}")
+    print("\nWrote " + "\n      ".join(written))
     print(f"  {len(transits)} light curve(s), {len(rvs)} RV file(s), "
           f"{len(planets)} planet(s), {'circular' if circular else 'eccentric'}")
 
     if args.check:
         check_fit(outdir, f"{name}.yaml")
 
-    print(f"\nReview the files, then:  cd {outdir} && sbatch {os.path.basename(slurm_path)}")
+    run = (f"sbatch {os.path.basename(slurm_path)}" if args.slurm
+           else f"{args.exozippy_cmd} {name}.yaml")
+    print(f"\nReview the files, then:  cd {outdir} && {run}")
 
 
 if __name__ == "__main__":

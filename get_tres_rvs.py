@@ -13,24 +13,24 @@ written as <outdir>/<TICID>.TRES.rv (or .CHIRON.rv).  The raw table is kept
 next to it as <TICID>.TRES.raw.txt.  The site's times are BJD_UTC; the setup
 script reads that from the header and tells EXOZIPPy (time_scale: utc).
 
-Credentials (never put them on the command line):
-  username: --username, or $TRES_USERNAME
-  password: $TRES_PASSWORD, or the file given by --password-file
-            (default ~/.tres_password, a file holding only the password;
+Credentials (never put the password on the command line):
+  username: --username, $TRES_USERNAME, or `username:` in ~/.exozippy_pipeline.yaml
+  password: the file given by --password-file, else $TRES_PASSWORD, else
+            ~/.tres_password (a file holding only the password;
             `chmod 600 ~/.tres_password`)
 
 Two download methods:
-  requests  (default) plain HTTP form posts -- no browser needed, works on
-            the HPCC
+  requests  (default) plain HTTP form posts -- no browser needed, so it also
+            works on a cluster node
   selenium  drives a headless browser like the old RV_mini_pipeline.py;
-            needs `pip install selenium` and Firefox (on the HPCC) or Chrome
+            needs `pip install selenium` and Firefox or Chrome
 
-Adapted from exofast_tools/scripts/RV_mini_pipeline.py.
+Adapted from scripts/RV_mini_pipeline.py in https://github.com/jackschulte/exofast_tools.
 
 Examples
 --------
-  python get_tres_rvs.py 376866659 --username schulte --outdir ~/fits/toi7475_exozippy
-  python get_tres_rvs.py TOI-7475 --username schulte            # TOIs are resolved on ExoFOP
+  python get_tres_rvs.py 376866659 --username myname --outdir toi7475_exozippy
+  python get_tres_rvs.py TOI-7475 --username myname             # TOIs are resolved on ExoFOP
   python get_tres_rvs.py 376866659 --raw-file saved_table.txt   # just reformat a saved table
 """
 
@@ -47,6 +47,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import exofop_utils  # noqa: E402
+import user_defaults  # noqa: E402
 
 BASE_URL = "http://tess.exoplanets.dk/"
 LOGIN_USER = "ctl00$cpMainContent$tbUserName"
@@ -425,7 +426,8 @@ def add_rv_arguments(p):
                    help="which spectrograph's RVs to fetch (default: tres)")
     g.add_argument("--username", default=None, help="tess.exoplanets.dk username (or $TRES_USERNAME)")
     g.add_argument("--password-file", default=None,
-                   help=f"file holding only the site password (default: {DEFAULT_PASSWORD_FILE})")
+                   help="file holding only the site password (default: $TRES_PASSWORD, "
+                        "else ~/.tres_password)")
     g.add_argument("--raw-file", default=None,
                    help="reformat this saved RV table instead of downloading")
     g.add_argument("--method", default="requests", choices=("requests", "selenium"),
@@ -435,14 +437,20 @@ def add_rv_arguments(p):
     return g
 
 
-def main(argv=None):
+def build_parser(apply_defaults=True):
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument("target", help="TIC ID (e.g. 376866659) or TOI (e.g. TOI-7475)")
     p.add_argument("--outdir", default=".", help="where to write the .rv file (default: .)")
     add_rv_arguments(p)
-    args = p.parse_args(argv)
+    if apply_defaults:
+        user_defaults.apply(p)
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
 
     t = str(args.target).strip()
     if t.isdigit() and len(t) > 5:  # a bare long number is a TIC

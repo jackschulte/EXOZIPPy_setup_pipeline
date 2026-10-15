@@ -17,9 +17,11 @@ pipeline: SPOC > TESS-SPOC > QLP), downloaded with lightkurve, and:
 
 A diagnostic PNG per sector goes to <outdir>/lc_diagnostics/.
 
-Adapted from exofast_tools/scripts/lightcurve_pipeline/lightcurve_pipeline.py
-(E. Thygesen, J. Ranshaw) and setup_fit.ipynb.  Requires Andrew Vanderburg's
-keplersplinev2 (https://github.com/avanderburg/keplersplinev2) and pydl.
+Adapted from scripts/lightcurve_pipeline/lightcurve_pipeline.py (E. Thygesen,
+J. Ranshaw) and setup_fit.ipynb in https://github.com/jackschulte/exofast_tools.
+Requires Andrew Vanderburg's
+keplersplinev2.py (https://github.com/avanderburg/keplersplinev2; put it next
+to this script or use --keplerspline-path) and pydl (pip install pydl).
 
 Examples
 --------
@@ -44,15 +46,12 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from astropy.time import Time  # noqa: E402
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 import exofop_utils  # noqa: E402
+import user_defaults  # noqa: E402
 
-# keplersplinev2 lives with the EXOFASTv2 light-curve pipeline; override with
-# the KEPLERSPLINE_PATH environment variable if it moves.
-KEPLERSPLINE_PATH = os.environ.get(
-    "KEPLERSPLINE_PATH",
-    "/mnt/research/Exoplanet_Lab/jack/pipelines/exofast_tools/scripts/lightcurve_pipeline",
-)
+KEPLERSPLINE_URL = "https://github.com/avanderburg/keplersplinev2"
 
 # Highest cadence first, as setup_fit.ipynb recommends.  Pass --cadences to
 # prefer 120 s (6x fewer points than 20 s, so a cheaper fit).
@@ -63,20 +62,32 @@ DEFAULT_AUTHORS = ("SPOC", "TESS-SPOC", "QLP")
 BTJD_OFFSET = 2457000.0
 
 
-def _import_keplerspline():
+def _import_keplerspline(path=None):
+    """Import choosekeplersplinev2.
+
+    keplersplinev2.py is not on PyPI, so it is looked for, in order, in the
+    directory `path` (--keplerspline-path, or $KEPLERSPLINE_PATH), wherever a
+    plain import finds it (e.g. on PYTHONPATH), and next to these scripts.
+    """
+    path = path or os.environ.get("KEPLERSPLINE_PATH")
+    if path:
+        path = os.path.expanduser(path)
+        if not os.path.exists(os.path.join(path, "keplersplinev2.py")):
+            raise ImportError(f"no keplersplinev2.py in {path} (--keplerspline-path / "
+                              f"$KEPLERSPLINE_PATH)")
+        sys.path.insert(0, path)
+    elif HERE not in sys.path:
+        sys.path.append(HERE)
     try:
         from keplersplinev2 import choosekeplersplinev2
-    except ImportError:
-        sys.path.insert(0, KEPLERSPLINE_PATH)
-        try:
-            from keplersplinev2 import choosekeplersplinev2
-        except ImportError as e:
+    except ImportError as e:
+        if e.name == "keplersplinev2":
             raise ImportError(
-                f"could not import keplersplinev2 ({e}). It needs pydl "
-                f"('pip install pydl') and keplersplinev2.py on the path; set "
-                f"KEPLERSPLINE_PATH to its directory (currently "
-                f"{KEPLERSPLINE_PATH})."
+                f"keplersplinev2.py not found. Download it from {KEPLERSPLINE_URL} "
+                f"and put it in {HERE}, or point --keplerspline-path (or "
+                f"$KEPLERSPLINE_PATH) at the directory that holds it."
             ) from e
+        raise ImportError(f"keplersplinev2 needs {e.name}: pip install {e.name}") from e
     return choosekeplersplinev2
 
 
@@ -320,13 +331,14 @@ def process_product(
     omit_tc=(),
     plot=True,
     overwrite=False,
+    keplerspline_path=None,
 ):
     """Download, flatten, clean and chop one TESS product.
 
     Returns a dict describing the written file, or None if the sector has
     no usable in-transit data.
     """
-    choosekeplersplinev2 = _import_keplerspline()
+    choosekeplersplinev2 = _import_keplerspline(keplerspline_path)
 
     sector = _sector(lcfile_result.mission[0])
     author = str(lcfile_result.author[0])
@@ -552,6 +564,8 @@ def get_tess_data(
     Returns a list of dicts (see process_product), one per file written.
     """
     targetname = targetname or f"TIC{ticid}"
+    if not list_only:  # fail before downloading anything, not once per sector
+        _import_keplerspline(process_kwargs.get("keplerspline_path"))
     print(f"Searching MAST for TESS light curves of TIC {ticid} ...")
     sr = search_products(ticid, authors)
     if len(sr) == 0:
@@ -600,14 +614,23 @@ def add_tess_arguments(p):
     g.add_argument("--omit-tc", type=float, nargs="+", default=(),
                    help="BJD mid-transit times of individual transits to leave out")
     g.add_argument("--no-plots", action="store_true", help="skip the diagnostic PNGs")
+    g.add_argument("--keplerspline-path", default=None,
+                   help="directory holding keplersplinev2.py (default: $KEPLERSPLINE_PATH, "
+                        "the Python path, or this script's directory)")
     return g
+
+
+def _as_list(value):
+    """'120,20,200' or [120, 20, 200] (from a defaults file) -> ['120', '20', '200']."""
+    items = value.split(",") if isinstance(value, str) else value
+    return [str(v).strip() for v in items]
 
 
 def tess_kwargs(args):
     return dict(
         sectors=args.sectors,
-        cadences=tuple(int(c) for c in args.cadences.split(",")),
-        authors=tuple(a.strip() for a in args.authors.split(",")),
+        cadences=tuple(int(c) for c in _as_list(args.cadences)),
+        authors=tuple(_as_list(args.authors)),
         window=args.window,
         nsigma=args.nsigma,
         bin_minutes=args.bin_minutes,
@@ -615,10 +638,11 @@ def tess_kwargs(args):
         undeblend=args.undeblend,
         omit_tc=args.omit_tc,
         plot=not args.no_plots,
+        keplerspline_path=args.keplerspline_path,
     )
 
 
-def main(argv=None):
+def build_parser(apply_defaults=True):
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -635,7 +659,13 @@ def main(argv=None):
                    help="only list available products and the selection")
     p.add_argument("--overwrite", action="store_true", help="overwrite existing light-curve files")
     add_tess_arguments(p)
-    args = p.parse_args(argv)
+    if apply_defaults:
+        user_defaults.apply(p)
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
 
     kind, value = exofop_utils.parse_target(args.target)
     if args.ephem:

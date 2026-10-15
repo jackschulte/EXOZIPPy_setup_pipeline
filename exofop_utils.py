@@ -3,8 +3,8 @@
 get_target_info()   -> TIC ID and per-planet ephemerides for a TOI (or a TIC)
 spectroscopic_feh() -> SNR-weighted spectroscopic [Fe/H] prior from ExoFOP
 
-Adapted from exofast_tools/scripts/generate_priors_TOI.py and the ExoFOP
-branch of lightcurve_pipeline.get_params.
+Adapted from scripts/generate_priors_TOI.py and the ExoFOP branch of
+lightcurve_pipeline.get_params in https://github.com/jackschulte/exofast_tools.
 """
 
 import io

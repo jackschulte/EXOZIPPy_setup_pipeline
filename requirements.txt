@@ -1,0 +1,8 @@
+# Install EXOZIPPy first (it brings numpy, pandas, astropy, lightkurve,
+# astroquery, matplotlib and pyyaml), then, in the same environment:
+#     pip install -r requirements.txt
+pydl              # needed by keplersplinev2.py (download that file separately; see README)
+requests
+beautifulsoup4
+# optional, only for get_tres_rvs.py --method selenium:
+# selenium

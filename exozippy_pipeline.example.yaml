@@ -1,0 +1,38 @@
+# Personal defaults for the pipeline scripts.
+#
+# Copy this to ~/.exozippy_pipeline.yaml (or point $EXOZIPPY_PIPELINE_CONFIG
+# at it) and keep the lines you need.  Every key is a command-line option
+# without its leading dashes, and sets that option's default; an option
+# typed on the command line still wins.  Repeatable options (slurm-setup,
+# slurm-directive) take a list, and command-line values are added to it.
+# A key no script knows is reported as a warning.
+
+# --- TRES site (get_tres_rvs.py, setup_exozippy_fit.py) ---------------------
+# username: myname                 # the password goes in ~/.tres_password
+# method: requests                 # or selenium (needs `pip install selenium`)
+# browser: chrome                  # for method: selenium
+
+# --- light curves ------------------------------------------------------------
+# keplerspline-path: ~/code/keplersplinev2   # directory holding keplersplinev2.py
+# cadences: 120,20,200,600,1800              # prefer 120 s over 20 s (cheaper fits)
+
+# --- sampler -------------------------------------------------------------------
+# chains: 8                        # numpyro runs one chain per core
+# draws: 4000
+# exozippy-cmd: poetry run exozippy          # if EXOZIPPy lives in a poetry env
+# check: true                      # always build the model once at the end of setup
+
+# --- a SLURM cluster -----------------------------------------------------------
+# slurm: true                      # write SLURM_TOI<N>.sb
+# chains: 20
+# slurm-days: 6.5
+# slurm-mem-per-cpu: 1G
+# slurm-account: my_group
+# slurm-partition: general
+# email: me@example.edu
+# slurm-setup:                     # shell lines run before the fit
+#   - module purge
+#   - module load Miniforge3
+#   - conda activate exozippy
+# slurm-directive:                 # extra #SBATCH options, without the dashes
+#   - qos=normal

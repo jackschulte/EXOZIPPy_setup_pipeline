@@ -11,20 +11,25 @@ They run anywhere EXOZIPPy runs, on a laptop or on a SLURM cluster.
 
 ## Installation
 
-1. **Install EXOZIPPy** by following [its README](https://github.com/jdeast/EXOZIPPy).
+1. **Clone this repository**:
+   ```bash
+   git clone https://github.com/jackschulte/EXOZIPPy_setup_pipeline.git
+   cd EXOZIPPy_setup_pipeline
+   ```
+2. **Install EXOZIPPy** by following [its README](https://github.com/jdeast/EXOZIPPy).
    It brings numpy, pandas, astropy, lightkurve, astroquery, matplotlib and
    PyYAML.
-2. **Install the extra packages**, in the same Python environment:
+3. **Install the extra packages**, in the same Python environment:
    ```bash
    pip install -r requirements.txt
    ```
-3. **Get `keplersplinev2.py`** from
+4. **Get `keplersplinev2.py`** from
    [avanderburg/keplersplinev2](https://github.com/avanderburg/keplersplinev2).
    The light curves are flattened with it, and it is not on PyPI. Put the file
    in this folder. If it lives somewhere else, give its directory with
    `--keplerspline-path`, `$KEPLERSPLINE_PATH`, or the
    [defaults file](#personal-defaults).
-4. **Store your tess.exoplanets.dk password** if you want TRES RVs: one line
+5. **Store your tess.exoplanets.dk password** if you want TRES RVs: one line
    in a file only you can read.
    ```bash
    echo 'MY_PASSWORD' > ~/.tres_password && chmod 600 ~/.tres_password
